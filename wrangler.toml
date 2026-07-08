@@ -41,6 +41,7 @@ ALLOWED_ORIGINS = "https://atlas-systems.uk,https://www.atlas-systems.uk,http://
 # of headroom before an online-claiming snapshot reads as degraded.
 # Same staleness value as atlas-api-public's STALE_AFTER_SECONDS.
 STALE_AFTER_SECONDS = "1200"
+PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1"
 
 # Named environments inherit nothing (decisions.md): this block
 # redeclares every var and binding the Worker reads, or dev deploys
@@ -57,6 +58,7 @@ workers_dev = true
 [env.dev.vars]
 ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788"
 STALE_AFTER_SECONDS = "1200"
+PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1"
 
 [[env.dev.kv_namespaces]]
 binding = "TELEMETRY_KV"

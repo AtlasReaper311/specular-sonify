@@ -9,20 +9,21 @@
  * which satisfies the estate's conditional-KV-write rule by the
  * strongest possible means.
  *
- * Honesty over completeness: TELEMETRY_KV today holds exactly one key
- * (specular:last-known-good:v1, a hardware snapshot), so only the two
- * specular services can be derived from it. The other four curated
- * services return status "unknown" with null numeric fields, exactly
- * as the contract specifies, rather than invented measurements. The
- * derivation lives in one adapter function so richer per-service keys
- * can slot in later without touching the route handler. See README
- * for the coverage table.
+ * Honesty over completeness: TELEMETRY_KV still owns the specular
+ * hardware snapshot, while atlas-api-public already owns live estate
+ * stats, measured uptime, and sentinel latencies. This Worker reads
+ * both public facts and reshapes them into one fixed audio frame; when
+ * a source is absent, the affected fields stay null rather than being
+ * invented. The derivation lives in adapter functions so richer
+ * per-service keys can slot in later without touching the route
+ * handler. See README for the coverage table.
  */
 
 import { handleMeta } from "./_meta.js";
 
 /** Written by specular-edge; this Worker only ever reads it. */
 const KV_KEY = "specular:last-known-good:v1";
+const DEFAULT_PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1";
 
 /**
  * The curated service list, fixed order, always six, regardless of
@@ -105,6 +106,44 @@ async function readSnapshot(env) {
   }
 }
 
+async function fetchJson(url) {
+  const started = Date.now();
+  try {
+    const res = await fetch(url, {
+      headers: { "user-agent": "specular-sonify/1.1" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      return {
+        ok: false,
+        latency_ms: Date.now() - started,
+        body: null,
+      };
+    }
+    return {
+      ok: true,
+      latency_ms: Date.now() - started,
+      body: await res.json(),
+    };
+  } catch (err) {
+    console.log("sonify: upstream unreadable:", url, err.message);
+    return { ok: false, latency_ms: null, body: null };
+  }
+}
+
+async function readPublicFacts(env) {
+  const base = (env.PUBLIC_API_BASE || DEFAULT_PUBLIC_API_BASE).replace(/\/$/, "");
+  const [stats, infra] = await Promise.all([
+    fetchJson(`${base}/stats`),
+    fetchJson(`${base}/infra/status`),
+  ]);
+  return {
+    stats: stats.ok ? stats.body : null,
+    infra: infra.ok ? infra.body : null,
+    apiLatencyMs: stats.latency_ms,
+  };
+}
+
 /** A service record with no measurements. The contract's null rule:
  *  present in the list, status set, every numeric field null. */
 function nullService(name, status) {
@@ -118,9 +157,48 @@ function nullService(name, status) {
   };
 }
 
+function service(name, status, fields = {}) {
+  return {
+    ...nullService(name, status),
+    ...fields,
+  };
+}
+
+function boolStatus(value) {
+  if (value === true) return "healthy";
+  if (value === false) return "down";
+  return "unknown";
+}
+
+function infraStatus(infra, checkNames) {
+  if (!infra || infra.stale === true) return "unknown";
+  const checks = checkNames
+    .map((name) => infra.components?.[name])
+    .filter(Boolean);
+  if (!checks.length) return "unknown";
+  const passing = checks.filter((check) => check.ok === true).length;
+  if (passing === checks.length) return "healthy";
+  if (passing === 0) return "down";
+  return "degraded";
+}
+
+function averageLatency(infra, checkNames) {
+  const values = checkNames
+    .map((name) => infra?.components?.[name]?.latency_ms)
+    .filter((value) => Number.isFinite(value));
+  if (!values.length) return null;
+  return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+}
+
+function uptime(stats, component) {
+  const value = stats?.uptime?.components?.[component];
+  return Number.isFinite(value) ? value : null;
+}
+
 /**
- * The adapter: one snapshot in, six contract records out. Everything
- * this store can honestly say, and nothing it cannot:
+ * The adapter: one hardware snapshot plus public estate facts in, six
+ * contract records out. Everything the sources can honestly say, and
+ * nothing they cannot:
  *
  *   specular-telemetry  online:true + fresh saved_at -> healthy
  *                       online:true + stale saved_at -> degraded
@@ -136,25 +214,61 @@ function nullService(name, status) {
  *                       distinguish an edge outage from a long machine
  *                       sleep (conditional writes go quiet offline), so
  *                       presence is the only honest signal here.
- *   everything else     unknown, all nulls, until richer keys exist.
- *
- * No latency, uptime, error-rate or deploy history exists in this
- * store for ANY service, so those fields are null across the board;
- * the frontend's per-status null defaults own what that sounds like.
+ * Public stats add measured uptime where atlas-api-public already
+ * accrues it. Infra status adds local latencies for Ollama and corpus.
+ * Error-rate and deploy history are still null because no source owns
+ * those facts yet; the frontend's per-status null defaults own what
+ * that sounds like.
  */
-function deriveServices(snapshot, nowMs, staleAfterSecs) {
+function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
+  const { stats, infra, apiLatencyMs } = facts;
+  const components = stats?.estate?.components ?? {};
   return SERVICES.map((name) => {
+    if (name === "ramone-memory") {
+      return service(name, infraStatus(infra, ["ollama"]), {
+        latency_ms: averageLatency(infra, ["ollama"]),
+        uptime_pct: uptime(stats, "machine"),
+      });
+    }
+    if (name === "atlas-corpus") {
+      return service(name, infraStatus(infra, ["corpus_health", "corpus_search"]), {
+        latency_ms: averageLatency(infra, ["corpus_health", "corpus_search"]),
+        uptime_pct: uptime(stats, "corpus"),
+      });
+    }
     if (name === "specular-telemetry") {
-      if (!snapshot) return nullService(name, "unknown");
-      if (snapshot.online === false) return nullService(name, "down");
+      if (!snapshot) {
+        return service(name, boolStatus(components.specular), {
+          uptime_pct: uptime(stats, "specular"),
+        });
+      }
+      if (snapshot.online === false) {
+        return service(name, "down", { uptime_pct: uptime(stats, "specular") });
+      }
       const savedAtMs = Date.parse(snapshot.saved_at ?? "");
       const fresh =
         Number.isFinite(savedAtMs) &&
         nowMs - savedAtMs <= staleAfterSecs * 1000;
-      return nullService(name, fresh ? "healthy" : "degraded");
+      return service(name, fresh ? "healthy" : "degraded", {
+        uptime_pct: uptime(stats, "specular"),
+      });
+    }
+    if (name === "atlas-api-index") {
+      return service(name, boolStatus(components.registry), {
+        latency_ms: apiLatencyMs,
+        uptime_pct: uptime(stats, "registry"),
+      });
+    }
+    if (name === "ramone-trigger") {
+      return service(name, boolStatus(components.machine), {
+        uptime_pct: uptime(stats, "machine"),
+      });
     }
     if (name === "specular-edge") {
-      return nullService(name, snapshot ? "healthy" : "unknown");
+      const status = snapshot ? boolStatus(components.specular) : "unknown";
+      return service(name, status, {
+        uptime_pct: uptime(stats, "specular"),
+      });
     }
     return nullService(name, "unknown");
   });
@@ -180,8 +294,11 @@ function deriveEstate(services) {
 async function serveSonify(request, env) {
   const nowMs = Date.now();
   const staleAfterSecs = Number(env.STALE_AFTER_SECONDS || "1200");
-  const snapshot = await readSnapshot(env);
-  const services = deriveServices(snapshot, nowMs, staleAfterSecs);
+  const [snapshot, facts] = await Promise.all([
+    readSnapshot(env),
+    readPublicFacts(env),
+  ]);
+  const services = deriveServices(snapshot, nowMs, staleAfterSecs, facts);
   const payload = {
     timestamp: new Date(nowMs).toISOString(),
     estate: deriveEstate(services),

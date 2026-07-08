@@ -16,7 +16,7 @@
 ![Store](https://img.shields.io/badge/store-telemetry_kv-aaa9a0?style=flat-square&labelColor=0a0a0f)
 ![Cost](https://img.shields.io/badge/cost-%C2%A30-aaa9a0?style=flat-square&labelColor=0a0a0f)
 
-`specular-sonify` is a Cloudflare Worker that turns the current Atlas telemetry snapshot into the fixed `/sonify` frame used by the site audio module. It is deliberately read-only: it reads the `TELEMETRY_KV` snapshot maintained by `specular-edge`, derives only what that store can honestly prove, and performs zero KV writes.
+`specular-sonify` is a Cloudflare Worker that turns current Atlas telemetry into the fixed `/sonify` frame used by the site audio module. It is deliberately read-only: it reads the `TELEMETRY_KV` snapshot maintained by `specular-edge`, reads public facts from `atlas-api-public`, derives only what those sources can honestly prove, and performs zero KV writes.
 
 ## Prerequisites
 
@@ -71,7 +71,7 @@ The `services` array always contains the same six entries in the same order: `ra
 
 ## Operational Notes
 
-`TELEMETRY_KV` currently holds one key: `specular:last-known-good:v1`. That means `specular-sonify` can classify `specular-telemetry` from the hardware snapshot and `specular-edge` from the presence of a parseable snapshot, while the other curated services remain `unknown` until richer keys exist.
+`TELEMETRY_KV` currently holds one key: `specular:last-known-good:v1`, which classifies `specular-telemetry` and confirms the `specular-edge` write path. `atlas-api-public` contributes measured uptime, registry/specular/corpus/machine health, and sentinel latencies for Ollama and corpus. Fields with no source remain null: error rate and deploy age are not guessed.
 
 `overall_health` is the mean score over known services only: `healthy` is `1`, `degraded` is `0.5`, and `down` is `0`. Unknown services are excluded because no data is not the same as bad data. `/sonify` is served with `cache-control: no-store`; the payload is small, the poll cadence is ten seconds, and the point of the endpoint is liveness.
 

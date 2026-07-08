@@ -34,6 +34,10 @@ enabled = true
 binding = "TELEMETRY_KV"
 id = "3b033fc37ca14e7c9fb1559ecd6430b1"
 
+[[services]]
+binding = "ATLAS_PUBLIC"
+service = "atlas-api-public"
+
 [vars]
 ALLOWED_ORIGINS = "https://atlas-systems.uk,https://www.atlas-systems.uk,http://localhost:8788"
 # A healthy specular-edge refreshes the snapshot at most every 600s
@@ -63,5 +67,9 @@ PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1"
 [[env.dev.kv_namespaces]]
 binding = "TELEMETRY_KV"
 id = "3b033fc37ca14e7c9fb1559ecd6430b1"
+
+[[env.dev.services]]
+binding = "ATLAS_PUBLIC"
+service = "atlas-api-public"
 
 # No secrets: this Worker reads public telemetry and holds no tokens.

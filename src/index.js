@@ -106,10 +106,10 @@ async function readSnapshot(env) {
   }
 }
 
-async function fetchJson(url) {
+async function fetchJson(fetcher, url) {
   const started = Date.now();
   try {
-    const res = await fetch(url, {
+    const res = await fetcher.fetch(url, {
       headers: { "user-agent": "specular-sonify/1.1" },
       signal: AbortSignal.timeout(5000),
     });
@@ -132,10 +132,15 @@ async function fetchJson(url) {
 }
 
 async function readPublicFacts(env) {
-  const base = (env.PUBLIC_API_BASE || DEFAULT_PUBLIC_API_BASE).replace(/\/$/, "");
+  const hasBinding =
+    env.ATLAS_PUBLIC && typeof env.ATLAS_PUBLIC.fetch === "function";
+  const fetcher = hasBinding ? env.ATLAS_PUBLIC : globalThis;
+  const base = hasBinding
+    ? "https://atlas-api-public/v1"
+    : (env.PUBLIC_API_BASE || DEFAULT_PUBLIC_API_BASE).replace(/\/$/, "");
   const [stats, infra] = await Promise.all([
-    fetchJson(`${base}/stats`),
-    fetchJson(`${base}/infra/status`),
+    fetchJson(fetcher, `${base}/stats`),
+    fetchJson(fetcher, `${base}/infra/status`),
   ]);
   return {
     stats: stats.ok ? stats.body : null,
@@ -195,6 +200,15 @@ function uptime(stats, component) {
   return Number.isFinite(value) ? value : null;
 }
 
+function currentUptime(stats, component, status) {
+  // The public uptime window includes normal homelab sleep. When the
+  // current probe is healthy, feeding that historical duty cycle into
+  // the audio filter makes a live system sound broken. Keep the filter
+  // open for current health; use measured uptime only when the current
+  // status is already degraded or down.
+  return status === "healthy" ? null : uptime(stats, component);
+}
+
 /**
  * The adapter: one hardware snapshot plus public estate facts in, six
  * contract records out. Everything the sources can honestly say, and
@@ -225,21 +239,24 @@ function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
   const components = stats?.estate?.components ?? {};
   return SERVICES.map((name) => {
     if (name === "ramone-memory") {
-      return service(name, infraStatus(infra, ["ollama"]), {
+      const status = infraStatus(infra, ["ollama"]);
+      return service(name, status, {
         latency_ms: averageLatency(infra, ["ollama"]),
-        uptime_pct: uptime(stats, "machine"),
+        uptime_pct: currentUptime(stats, "machine", status),
       });
     }
     if (name === "atlas-corpus") {
-      return service(name, infraStatus(infra, ["corpus_health", "corpus_search"]), {
+      const status = infraStatus(infra, ["corpus_health", "corpus_search"]);
+      return service(name, status, {
         latency_ms: averageLatency(infra, ["corpus_health", "corpus_search"]),
-        uptime_pct: uptime(stats, "corpus"),
+        uptime_pct: currentUptime(stats, "corpus", status),
       });
     }
     if (name === "specular-telemetry") {
       if (!snapshot) {
-        return service(name, boolStatus(components.specular), {
-          uptime_pct: uptime(stats, "specular"),
+        const status = boolStatus(components.specular);
+        return service(name, status, {
+          uptime_pct: currentUptime(stats, "specular", status),
         });
       }
       if (snapshot.online === false) {
@@ -249,25 +266,28 @@ function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
       const fresh =
         Number.isFinite(savedAtMs) &&
         nowMs - savedAtMs <= staleAfterSecs * 1000;
-      return service(name, fresh ? "healthy" : "degraded", {
-        uptime_pct: uptime(stats, "specular"),
+      const status = fresh ? "healthy" : "degraded";
+      return service(name, status, {
+        uptime_pct: currentUptime(stats, "specular", status),
       });
     }
     if (name === "atlas-api-index") {
-      return service(name, boolStatus(components.registry), {
+      const status = boolStatus(components.registry);
+      return service(name, status, {
         latency_ms: apiLatencyMs,
-        uptime_pct: uptime(stats, "registry"),
+        uptime_pct: currentUptime(stats, "registry", status),
       });
     }
     if (name === "ramone-trigger") {
-      return service(name, boolStatus(components.machine), {
-        uptime_pct: uptime(stats, "machine"),
+      const status = boolStatus(components.machine);
+      return service(name, status, {
+        uptime_pct: currentUptime(stats, "machine", status),
       });
     }
     if (name === "specular-edge") {
       const status = snapshot ? boolStatus(components.specular) : "unknown";
       return service(name, status, {
-        uptime_pct: uptime(stats, "specular"),
+        uptime_pct: currentUptime(stats, "specular", status),
       });
     }
     return nullService(name, "unknown");

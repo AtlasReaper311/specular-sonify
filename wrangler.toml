@@ -1,0 +1,65 @@
+# specular-sonify :: read-only estate frame for the sonification engine.
+#
+# Decoupled from specular-edge on purpose: own repo, own deploy
+# lifecycle, reads the same TELEMETRY_KV and never writes it. The
+# estate's conditional-KV-write rule is satisfied by the strongest
+# possible means here: zero writes.
+#
+# Route layering: /sonify* on the shared api hostname is more specific
+# than atlas-notify's /* wildcard, so this Worker owns the path without
+# unwiring anything (decisions.md :: Worker naming and route layering).
+#
+# zone_id, never zone_name: scoped CI tokens cannot perform the zone
+# membership lookup, and the failure reads like a routing bug
+# (decisions.md :: wrangler.toml rule).
+
+name = "specular-sonify"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+# Routed production hostname only, one URL to reason about (matches
+# specular-edge).
+workers_dev = false
+
+routes = [
+  { pattern = "api.atlas-systems.uk/sonify*", zone_id = "8ba6350a78c988447c111048b125f917" }
+]
+
+[observability]
+enabled = true
+
+# The namespace specular-edge maintains (see specular-telemetry's
+# worker/wrangler.toml for its creation). This Worker holds no write
+# path to it: every access in src/index.js is a get.
+[[kv_namespaces]]
+binding = "TELEMETRY_KV"
+id = "3b033fc37ca14e7c9fb1559ecd6430b1"
+
+[vars]
+ALLOWED_ORIGINS = "https://atlas-systems.uk,https://www.atlas-systems.uk,http://localhost:8788"
+# A healthy specular-edge refreshes the snapshot at most every 600s
+# (its KV_MIN_WRITE_INTERVAL_SECONDS); 1200 gives two write intervals
+# of headroom before an online-claiming snapshot reads as degraded.
+# Same staleness value as atlas-api-public's STALE_AFTER_SECONDS.
+STALE_AFTER_SECONDS = "1200"
+
+# Named environments inherit nothing (decisions.md): this block
+# redeclares every var and binding the Worker reads, or dev deploys
+# with them empty. Dev deliberately has no routes and no triggers.
+#
+# Dev points at the PRODUCTION TELEMETRY_KV id, which departs from the
+# usual separate-dev-namespace rule on purpose: that rule exists so a
+# dev Worker can never write to a production cache, and this Worker
+# has no write path at all. Reading real telemetry in dev is safe and
+# strictly more useful than reading an empty namespace.
+[env.dev]
+workers_dev = true
+
+[env.dev.vars]
+ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788"
+STALE_AFTER_SECONDS = "1200"
+
+[[env.dev.kv_namespaces]]
+binding = "TELEMETRY_KV"
+id = "3b033fc37ca14e7c9fb1559ecd6430b1"
+
+# No secrets: this Worker reads public telemetry and holds no tokens.

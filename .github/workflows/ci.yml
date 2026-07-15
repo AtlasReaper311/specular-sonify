@@ -1,0 +1,55 @@
+name: Pull request CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  worker-validation:
+    name: Worker configuration validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Parse Worker modules
+        run: |
+          node --check src/_meta.js
+          node --check src/index.js
+
+      - name: Validate the read-only Worker configuration
+        run: |
+          python3 - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          with Path("wrangler.toml").open("rb") as handle:
+              config = tomllib.load(handle)
+          if config.get("name") != "specular-sonify" or config.get("main") != "src/index.js":
+              raise SystemExit("wrangler.toml does not identify the specular-sonify entry point")
+          routes = config.get("routes", [])
+          if not routes or not all(re.fullmatch(r"[0-9a-f]{32}", item.get("zone_id", "")) for item in routes):
+              raise SystemExit("production routes require literal 32-character zone IDs")
+          kv = config.get("kv_namespaces", [])
+          if not any(item.get("binding") == "TELEMETRY_KV" and re.fullmatch(r"[0-9a-f]{32}", item.get("id", "")) for item in kv):
+              raise SystemExit("TELEMETRY_KV binding is missing or malformed")
+          services = config.get("services", [])
+          if not any(item.get("binding") == "ATLAS_PUBLIC" and item.get("service") == "atlas-api-public" for item in services):
+              raise SystemExit("ATLAS_PUBLIC service binding is missing or malformed")
+          dev = config.get("env", {}).get("dev", {})
+          if not dev.get("workers_dev"):
+              raise SystemExit("dev environment must remain workers.dev-only")
+          PY

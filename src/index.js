@@ -26,10 +26,8 @@ const KV_KEY = "specular:last-known-good:v1";
 const DEFAULT_PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1";
 
 /**
- * The curated service list has a fixed order and bounded size,
- * regardless of traffic or data volume. Every entry has a current
- * evidence owner; topology-only components remain outside this list
- * until an equally defensible source exists.
+ * The fixed list is the exact twenty-one-node union rendered by System
+ * SYMPHONY. It stays bounded regardless of traffic or repository growth.
  */
 export const SERVICES = [
   "ramone-memory",
@@ -43,7 +41,31 @@ export const SERVICES = [
   "github-pulse",
   "site-pulse",
   "deploy-watch",
+  "atlas-badges",
+  "atlas-blackbox",
+  "atlas-dep-audit",
+  "atlas-doc-viewer",
+  "atlas-journey-watch",
+  "atlas-quota-watch",
+  "atlas-systems",
+  "ramone-edge",
+  "specular-sonify",
+  "status",
 ];
+
+const DETAIL_COMPONENTS = Object.freeze({
+  "atlas-badges": "atlas_badges",
+  "atlas-blackbox": "atlas_blackbox",
+  "atlas-dep-audit": "atlas_dep_audit",
+  "atlas-doc-viewer": "atlas_doc_viewer",
+  "atlas-journey-watch": "atlas_journey_watch",
+  "atlas-quota-watch": "atlas_quota_watch",
+  "atlas-systems": "atlas_systems",
+  "ramone-edge": "ramone_edge",
+  status: "status_surface",
+});
+
+const SERVICE_STATUSES = new Set(["healthy", "degraded", "down", "unknown"]);
 
 /** Status scores for the overall_health mean. Unknown is excluded
  *  rather than scored: no data is not the same as bad data. */
@@ -53,13 +75,13 @@ const META = {
   name: "specular-sonify",
   description:
     "Estate health reshaped into the /sonify frame the sonification engine plays",
-  version: "1.1.0",
+  version: "2.0.0",
   endpoints: [
     {
       method: "GET",
       path: "/sonify",
       description:
-        "Current estate frame: overall health, active incidents, eleven evidence-backed services",
+        "Current estate frame: overall health, active incidents, twenty-one evidence-backed services",
     },
     { method: "GET", path: "/sonify/_meta", description: "This document" },
   ],
@@ -114,7 +136,7 @@ async function fetchJson(fetcher, url) {
   const started = Date.now();
   try {
     const res = await fetcher.fetch(url, {
-      headers: { "user-agent": "specular-sonify/1.1" },
+      headers: { "user-agent": "specular-sonify/2.0" },
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) {
@@ -159,6 +181,7 @@ function nullService(name, status) {
   return {
     name,
     status,
+    health_detail: null,
     evidence_source: null,
     measured_at: null,
     latency_ms: null,
@@ -179,6 +202,11 @@ function boolStatus(value) {
   if (value === true) return "healthy";
   if (value === false) return "down";
   return "unknown";
+}
+
+function detailedStatus(detail, fallback) {
+  if (SERVICE_STATUSES.has(detail?.status)) return detail.status;
+  return boolStatus(fallback);
 }
 
 function infraStatus(infra, checkNames) {
@@ -234,14 +262,29 @@ function statsService(
   fields = {},
 ) {
   if (stats?.ok !== true) return nullService(name, "unknown");
-  const measuredAt = statsMeasuredAt(stats);
-  const status = timestampIsFresh(measuredAt, nowMs, staleAfterSecs)
-    ? boolStatus(stats.estate?.components?.[component])
+  const snapshotMeasuredAt = statsMeasuredAt(stats);
+  const detail = stats.estate?.component_details?.[component];
+  const snapshotFresh = timestampIsFresh(
+    snapshotMeasuredAt,
+    nowMs,
+    staleAfterSecs,
+  );
+  const status = snapshotFresh
+    ? detailedStatus(detail, stats.estate?.components?.[component])
     : "unknown";
   return service(name, status, {
+    health_detail: snapshotFresh
+      ? detail?.detail ?? null
+      : "estate probe snapshot is stale",
     evidence_source:
-      `atlas-api-public:/v1/stats#estate.components.${component}`,
-    measured_at: measuredAt,
+      detail?.evidence_source
+      ?? `atlas-api-public:/v1/stats#estate.components.${component}`,
+    measured_at: snapshotFresh
+      ? detail?.measured_at ?? snapshotMeasuredAt
+      : snapshotMeasuredAt,
+    latency_ms: Number.isFinite(detail?.latency_ms)
+      ? detail.latency_ms
+      : null,
     uptime_pct: currentUptime(stats, component, status),
     ...fields,
   });
@@ -261,7 +304,7 @@ function freshInfraService(name, infra, checkNames, stats, uptimeComponent) {
 }
 
 /**
- * The adapter: one hardware snapshot plus public estate facts in, eleven
+ * The adapter: one hardware snapshot plus public estate facts in, twenty-one
  * contract records out. Everything the sources can honestly say, and
  * nothing they cannot:
  *
@@ -276,15 +319,17 @@ function freshInfraService(name, infra, checkNames, stats, uptimeComponent) {
  *   specular-edge       the dedicated specular_edge estate probe reports
  *                       Worker reachability independently of whether the
  *                       downstream telemetry machine is awake.
- * Public stats add current probe verdicts and measured uptime for ten
+ * Public stats add current probe verdicts and measured uptime for nineteen
  * estate components. Infra status adds more specific local latencies
- * for Ollama and corpus only while that report is fresh.
+ * for Ollama and corpus only while that report is fresh. This Worker
+ * supplies its own twenty-first verdict only while the current request
+ * handler is executing.
  * Error-rate and deploy history are still null because no source owns
  * those facts yet; the frontend's per-status null defaults own what
  * that sounds like.
  */
 export function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
-  const { stats, infra, apiLatencyMs } = facts;
+  const { stats, infra, apiLatencyMs, selfMeasuredAt } = facts;
   return SERVICES.map((name) => {
     if (name === "ramone-memory") {
       return freshInfraService(name, infra, ["ollama"], stats, "machine")
@@ -305,6 +350,7 @@ export function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
       }
       if (snapshot.online === false) {
         return service(name, "down", {
+          health_detail: "telemetry source reports offline",
           evidence_source: `TELEMETRY_KV:${KV_KEY}`,
           measured_at: snapshot.saved_at ?? null,
           uptime_pct: uptime(stats, "specular"),
@@ -316,6 +362,9 @@ export function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
         nowMs - savedAtMs <= staleAfterSecs * 1000;
       const status = fresh ? "healthy" : "degraded";
       return service(name, status, {
+        health_detail: fresh
+          ? "telemetry snapshot is current"
+          : "telemetry snapshot is stale",
         evidence_source: `TELEMETRY_KV:${KV_KEY}`,
         measured_at: snapshot.saved_at ?? null,
         uptime_pct: currentUptime(stats, "specular", status),
@@ -324,9 +373,19 @@ export function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
     if (name === "atlas-api-public") {
       return stats?.ok === true
         ? service(name, "healthy", {
+            health_detail: "current stats request succeeded",
             evidence_source: "atlas-api-public:/v1/stats request",
             measured_at: stats.generated_at ?? statsMeasuredAt(stats),
             latency_ms: Number.isFinite(apiLatencyMs) ? apiLatencyMs : null,
+          })
+        : nullService(name, "unknown");
+    }
+    if (name === "specular-sonify") {
+      return selfMeasuredAt
+        ? service(name, "healthy", {
+            health_detail: "current sonification request is executing",
+            evidence_source: "specular-sonify:self",
+            measured_at: selfMeasuredAt,
           })
         : nullService(name, "unknown");
     }
@@ -351,6 +410,16 @@ export function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
     if (name === "deploy-watch") {
       return statsService(name, "deploy_watch", stats, nowMs, staleAfterSecs);
     }
+    const detailedComponent = DETAIL_COMPONENTS[name];
+    if (detailedComponent) {
+      return statsService(
+        name,
+        detailedComponent,
+        stats,
+        nowMs,
+        staleAfterSecs,
+      );
+    }
     return nullService(name, "unknown");
   });
 }
@@ -373,14 +442,18 @@ export function deriveEstate(services) {
 
 async function serveSonify(request, env) {
   const nowMs = Date.now();
+  const timestamp = new Date(nowMs).toISOString();
   const staleAfterSecs = Number(env.STALE_AFTER_SECONDS || "1200");
   const [snapshot, facts] = await Promise.all([
     readSnapshot(env),
     readPublicFacts(env),
   ]);
-  const services = deriveServices(snapshot, nowMs, staleAfterSecs, facts);
+  const services = deriveServices(snapshot, nowMs, staleAfterSecs, {
+    ...facts,
+    selfMeasuredAt: timestamp,
+  });
   const payload = {
-    timestamp: new Date(nowMs).toISOString(),
+    timestamp,
     estate: deriveEstate(services),
     services,
   };

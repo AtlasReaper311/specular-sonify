@@ -26,19 +26,23 @@ const KV_KEY = "specular:last-known-good:v1";
 const DEFAULT_PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1";
 
 /**
- * The curated service list, fixed order, always six, regardless of
- * traffic or data volume. AUTHORITATIVE COPY: the frontend mirrors
- * this as CURATED_SERVICES in atlas-systems/static/js/sonify/
- * mapping.js, and the two must match (same vendored-constant
- * discipline as _meta.js).
+ * The curated service list has a fixed order and bounded size,
+ * regardless of traffic or data volume. Every entry has a current
+ * evidence owner; topology-only components remain outside this list
+ * until an equally defensible source exists.
  */
-const SERVICES = [
+export const SERVICES = [
   "ramone-memory",
   "atlas-corpus",
   "specular-telemetry",
+  "atlas-api-public",
   "atlas-api-index",
+  "atlas-notify",
   "ramone-trigger",
   "specular-edge",
+  "github-pulse",
+  "site-pulse",
+  "deploy-watch",
 ];
 
 /** Status scores for the overall_health mean. Unknown is excluded
@@ -49,13 +53,13 @@ const META = {
   name: "specular-sonify",
   description:
     "Estate health reshaped into the /sonify frame the sonification engine plays",
-  version: "1.0.0",
+  version: "1.1.0",
   endpoints: [
     {
       method: "GET",
       path: "/sonify",
       description:
-        "Current estate frame: overall health, active incidents, six curated services",
+        "Current estate frame: overall health, active incidents, eleven evidence-backed services",
     },
     { method: "GET", path: "/sonify/_meta", description: "This document" },
   ],
@@ -155,6 +159,8 @@ function nullService(name, status) {
   return {
     name,
     status,
+    evidence_source: null,
+    measured_at: null,
     latency_ms: null,
     uptime_pct: null,
     error_rate: null,
@@ -209,8 +215,53 @@ function currentUptime(stats, component, status) {
   return status === "healthy" ? null : uptime(stats, component);
 }
 
+function statsMeasuredAt(stats) {
+  return stats?.estate?.checked_at ?? stats?.generated_at ?? null;
+}
+
+function timestampIsFresh(value, nowMs, staleAfterSecs) {
+  const measuredAtMs = Date.parse(value ?? "");
+  return Number.isFinite(measuredAtMs)
+    && nowMs - measuredAtMs <= staleAfterSecs * 1000;
+}
+
+function statsService(
+  name,
+  component,
+  stats,
+  nowMs,
+  staleAfterSecs,
+  fields = {},
+) {
+  if (stats?.ok !== true) return nullService(name, "unknown");
+  const measuredAt = statsMeasuredAt(stats);
+  const status = timestampIsFresh(measuredAt, nowMs, staleAfterSecs)
+    ? boolStatus(stats.estate?.components?.[component])
+    : "unknown";
+  return service(name, status, {
+    evidence_source:
+      `atlas-api-public:/v1/stats#estate.components.${component}`,
+    measured_at: measuredAt,
+    uptime_pct: currentUptime(stats, component, status),
+    ...fields,
+  });
+}
+
+function freshInfraService(name, infra, checkNames, stats, uptimeComponent) {
+  if (!infra || infra.stale === true) return null;
+  const status = infraStatus(infra, checkNames);
+  if (status === "unknown") return null;
+  return service(name, status, {
+    evidence_source:
+      `atlas-api-public:/v1/infra/status#components.${checkNames.join("+")}`,
+    measured_at: infra.last_report_at ?? null,
+    latency_ms: averageLatency(infra, checkNames),
+    uptime_pct: currentUptime(stats, uptimeComponent, status),
+  });
+}
+
 /**
- * The adapter: one hardware snapshot plus public estate facts in, six
+ * The adapter: one hardware snapshot plus public estate facts in, eleven
  * contract records out. Everything the sources can honestly say, and
  * nothing they cannot:
  *
@@ -222,45 +273,42 @@ function currentUptime(stats, component, status) {
  *                         (the machine sleeping is normal estate life
  *                          and is reported plainly as down; the sound
  *                          design treats it as state, not emergency)
- *   specular-edge       snapshot present -> healthy: only specular-edge
- *                       writes this key, so a parseable snapshot proves
- *                       the writer path end to end. Freshness cannot
- *                       distinguish an edge outage from a long machine
- *                       sleep (conditional writes go quiet offline), so
- *                       presence is the only honest signal here.
- * Public stats add measured uptime where atlas-api-public already
- * accrues it. Infra status adds local latencies for Ollama and corpus.
+ *   specular-edge       the dedicated specular_edge estate probe reports
+ *                       Worker reachability independently of whether the
+ *                       downstream telemetry machine is awake.
+ * Public stats add current probe verdicts and measured uptime for ten
+ * estate components. Infra status adds more specific local latencies
+ * for Ollama and corpus only while that report is fresh.
  * Error-rate and deploy history are still null because no source owns
  * those facts yet; the frontend's per-status null defaults own what
  * that sounds like.
  */
-function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
+export function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
   const { stats, infra, apiLatencyMs } = facts;
-  const components = stats?.estate?.components ?? {};
   return SERVICES.map((name) => {
     if (name === "ramone-memory") {
-      const status = infraStatus(infra, ["ollama"]);
-      return service(name, status, {
-        latency_ms: averageLatency(infra, ["ollama"]),
-        uptime_pct: currentUptime(stats, "machine", status),
-      });
+      return freshInfraService(name, infra, ["ollama"], stats, "machine")
+        ?? statsService(name, "machine", stats, nowMs, staleAfterSecs);
     }
     if (name === "atlas-corpus") {
-      const status = infraStatus(infra, ["corpus_health", "corpus_search"]);
-      return service(name, status, {
-        latency_ms: averageLatency(infra, ["corpus_health", "corpus_search"]),
-        uptime_pct: currentUptime(stats, "corpus", status),
-      });
+      return freshInfraService(
+        name,
+        infra,
+        ["corpus_health", "corpus_search"],
+        stats,
+        "corpus",
+      ) ?? statsService(name, "corpus", stats, nowMs, staleAfterSecs);
     }
     if (name === "specular-telemetry") {
       if (!snapshot) {
-        const status = boolStatus(components.specular);
-        return service(name, status, {
-          uptime_pct: currentUptime(stats, "specular", status),
-        });
+        return statsService(name, "specular", stats, nowMs, staleAfterSecs);
       }
       if (snapshot.online === false) {
-        return service(name, "down", { uptime_pct: uptime(stats, "specular") });
+        return service(name, "down", {
+          evidence_source: `TELEMETRY_KV:${KV_KEY}`,
+          measured_at: snapshot.saved_at ?? null,
+          uptime_pct: uptime(stats, "specular"),
+        });
       }
       const savedAtMs = Date.parse(snapshot.saved_at ?? "");
       const fresh =
@@ -268,27 +316,40 @@ function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
         nowMs - savedAtMs <= staleAfterSecs * 1000;
       const status = fresh ? "healthy" : "degraded";
       return service(name, status, {
+        evidence_source: `TELEMETRY_KV:${KV_KEY}`,
+        measured_at: snapshot.saved_at ?? null,
         uptime_pct: currentUptime(stats, "specular", status),
       });
+    }
+    if (name === "atlas-api-public") {
+      return stats?.ok === true
+        ? service(name, "healthy", {
+            evidence_source: "atlas-api-public:/v1/stats request",
+            measured_at: stats.generated_at ?? statsMeasuredAt(stats),
+            latency_ms: Number.isFinite(apiLatencyMs) ? apiLatencyMs : null,
+          })
+        : nullService(name, "unknown");
     }
     if (name === "atlas-api-index") {
-      const status = boolStatus(components.registry);
-      return service(name, status, {
-        latency_ms: apiLatencyMs,
-        uptime_pct: currentUptime(stats, "registry", status),
-      });
+      return statsService(name, "registry", stats, nowMs, staleAfterSecs);
+    }
+    if (name === "atlas-notify") {
+      return statsService(name, "notify", stats, nowMs, staleAfterSecs);
     }
     if (name === "ramone-trigger") {
-      const status = boolStatus(components.machine);
-      return service(name, status, {
-        uptime_pct: currentUptime(stats, "machine", status),
-      });
+      return statsService(name, "ramone_trigger", stats, nowMs, staleAfterSecs);
     }
     if (name === "specular-edge") {
-      const status = snapshot ? boolStatus(components.specular) : "unknown";
-      return service(name, status, {
-        uptime_pct: currentUptime(stats, "specular", status),
-      });
+      return statsService(name, "specular_edge", stats, nowMs, staleAfterSecs);
+    }
+    if (name === "github-pulse") {
+      return statsService(name, "github_pulse", stats, nowMs, staleAfterSecs);
+    }
+    if (name === "site-pulse") {
+      return statsService(name, "site_pulse", stats, nowMs, staleAfterSecs);
+    }
+    if (name === "deploy-watch") {
+      return statsService(name, "deploy_watch", stats, nowMs, staleAfterSecs);
     }
     return nullService(name, "unknown");
   });
@@ -296,17 +357,16 @@ function deriveServices(snapshot, nowMs, staleAfterSecs, facts = {}) {
 
 /**
  * Estate rollup. overall_health is the mean status score over services
- * with data; an all-unknown estate reads as 1.0 (the frontend renders
- * that as "healthy but silent": calm floor, no voices, no alarm from
- * absence alone). active_incidents counts services that are down.
+ * with data; an all-unknown estate reads as null rather than quietly
+ * claiming health. active_incidents counts services that are down.
  */
-function deriveEstate(services) {
+export function deriveEstate(services) {
   const known = services.filter((s) => s.status !== "unknown");
   const health = known.length
     ? known.reduce((sum, s) => sum + STATUS_SCORE[s.status], 0) / known.length
-    : 1;
+    : null;
   return {
-    overall_health: Math.round(health * 1000) / 1000,
+    overall_health: health === null ? null : Math.round(health * 1000) / 1000,
     active_incidents: services.filter((s) => s.status === "down").length,
   };
 }
@@ -324,8 +384,8 @@ async function serveSonify(request, env) {
     estate: deriveEstate(services),
     services,
   };
-  // no-store: the payload is ~600 bytes, the poll cadence is ten
-  // seconds, and the whole point is liveness. Nothing here is worth a
+  // no-store: the payload is small and bounded, and the whole point is
+  // liveness. Nothing here is worth a
   // cache layer, and the spec's conditional-KV pattern is moot because
   // this Worker performs zero writes of any kind.
   return json(payload, request, env, { cacheControl: "no-store" });

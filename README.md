@@ -43,7 +43,7 @@ curl -sS https://api.atlas-systems.uk/sonify
 curl -sS https://api.atlas-systems.uk/sonify/_meta
 ```
 
-`GET /sonify` returns one current estate frame with `overall_health`, `active_incidents`, and six fixed service records. `GET /sonify/_meta` returns the estate-standard self-description supplied by the vendored `_meta.js` helper.
+`GET /sonify` returns one current estate frame with `overall_health`, `active_incidents`, and eleven fixed evidence-backed service records. `GET /sonify/_meta` returns the estate-standard self-description supplied by the vendored `_meta.js` helper.
 
 ## Contract
 
@@ -58,6 +58,8 @@ curl -sS https://api.atlas-systems.uk/sonify/_meta
     {
       "name": "ramone-memory",
       "status": "unknown",
+      "evidence_source": null,
+      "measured_at": null,
       "latency_ms": null,
       "uptime_pct": null,
       "error_rate": null,
@@ -67,13 +69,37 @@ curl -sS https://api.atlas-systems.uk/sonify/_meta
 }
 ```
 
-The `services` array always contains the same six entries in the same order: `ramone-memory`, `atlas-corpus`, `specular-telemetry`, `atlas-api-index`, `ramone-trigger`, and `specular-edge`. A service the store knows nothing about is still present with status `unknown` and null numeric fields; null is part of the contract, not an error case.
+The `services` array always contains the same eleven entries in the same order: `ramone-memory`, `atlas-corpus`, `specular-telemetry`, `atlas-api-public`, `atlas-api-index`, `atlas-notify`, `ramone-trigger`, `specular-edge`, `github-pulse`, `site-pulse`, and `deploy-watch`. A service whose current evidence cannot determine health is still present with status `unknown` and null numeric fields; null is part of the contract, not an error case.
+
+`evidence_source` and `measured_at` are additive transparency fields. They show which current public fact produced a status and when that fact was observed. They do not contain credentials or private data.
+
+| Service | Current evidence |
+| --- | --- |
+| `ramone-memory` | Fresh `/v1/infra/status` Ollama check, otherwise current `/v1/stats` machine probe |
+| `atlas-corpus` | Fresh `/v1/infra/status` corpus checks, otherwise current `/v1/stats` corpus probe |
+| `specular-telemetry` | `TELEMETRY_KV` snapshot with `/v1/stats` fallback |
+| `atlas-api-public` | Successful `/v1/stats` request and its request latency |
+| `atlas-api-index` | `/v1/stats` registry probe |
+| `atlas-notify` | `/v1/stats` notify probe |
+| `ramone-trigger` | Dedicated `/v1/stats` `ramone_trigger` probe |
+| `specular-edge` | Dedicated `/v1/stats` `specular_edge` reachability probe |
+| `github-pulse` | `/v1/stats` `github_pulse` probe |
+| `site-pulse` | `/v1/stats` `site_pulse` probe |
+| `deploy-watch` | `/v1/stats` `deploy_watch` probe |
 
 ## Operational Notes
 
-`TELEMETRY_KV` currently holds one key: `specular:last-known-good:v1`, which classifies `specular-telemetry` and confirms the `specular-edge` write path. `atlas-api-public` contributes measured uptime, registry/specular/corpus/machine health, and sentinel latencies for Ollama and corpus. Fields with no source remain null: error rate and deploy age are not guessed.
+`TELEMETRY_KV` currently holds one key: `specular:last-known-good:v1`, which classifies `specular-telemetry`. `atlas-api-public` contributes ten current estate probe verdicts, measured uptime, and more specific sentinel latencies for Ollama and corpus. A stale sentinel report is never reused as current health; the adapter falls back to the newer estate probe instead. Registry metadata is descriptive only and is never treated as health. Fields with no source remain null: error rate and deploy age are not guessed.
 
-`overall_health` is the mean score over known services only: `healthy` is `1`, `degraded` is `0.5`, and `down` is `0`. Unknown services are excluded because no data is not the same as bad data. `/sonify` is served with `cache-control: no-store`; the payload is small, the poll cadence is ten seconds, and the point of the endpoint is liveness.
+`overall_health` is the mean score over known services only: `healthy` is `1`, `degraded` is `0.5`, and `down` is `0`. Unknown services are excluded because no data is not the same as bad data; if every service is unknown, health is `null` rather than an invented `1.0`. `/sonify` is served with `cache-control: no-store`; the payload is small and the point of the endpoint is liveness.
+
+## Validation
+
+```bash
+npm test
+node --check src/_meta.js
+node --check src/index.js
+```
 
 ## How it fits into Atlas Systems
 

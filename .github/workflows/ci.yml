@@ -29,6 +29,9 @@ jobs:
           node --check src/_meta.js
           node --check src/index.js
 
+      - name: Test evidence derivation
+        run: npm test
+
       - name: Validate the read-only Worker configuration
         run: |
           python3 - <<'PY'

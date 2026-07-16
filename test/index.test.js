@@ -23,6 +23,80 @@ function facts(overrides = {}) {
           github_pulse: true,
           site_pulse: true,
           deploy_watch: true,
+          atlas_badges: true,
+          atlas_blackbox: true,
+          atlas_dep_audit: true,
+          atlas_doc_viewer: true,
+          atlas_journey_watch: true,
+          atlas_quota_watch: true,
+          atlas_systems: true,
+          ramone_edge: true,
+          status_surface: true,
+        },
+        component_details: {
+          atlas_badges: {
+            status: "healthy",
+            detail: "current main CI succeeded",
+            evidence_source: "github-actions:AtlasReaper311/atlas-badges/workflows/ci.yml",
+            measured_at: "2026-07-16T10:00:00.000Z",
+            latency_ms: null,
+          },
+          atlas_blackbox: {
+            status: "healthy",
+            detail: "flight recorder reachable",
+            evidence_source: "service-binding:atlas-blackbox/blackbox/health",
+            measured_at: "2026-07-16T10:30:48.000Z",
+            latency_ms: 12,
+          },
+          atlas_dep_audit: {
+            status: "degraded",
+            detail: "weekly audit running",
+            evidence_source: "github-actions:AtlasReaper311/atlas-dep-audit/workflows/audit.yml",
+            measured_at: "2026-07-16T10:25:00.000Z",
+            latency_ms: null,
+          },
+          atlas_doc_viewer: {
+            status: "healthy",
+            detail: "http 200",
+            evidence_source: "https://cv.atlas-systems.uk",
+            measured_at: "2026-07-16T10:30:48.000Z",
+            latency_ms: 24,
+          },
+          atlas_journey_watch: {
+            status: "healthy",
+            detail: "latest expected run succeeded",
+            evidence_source: "github-actions:AtlasReaper311/atlas-journey-watch/workflows/journey-watch.yml",
+            measured_at: "2026-07-16T09:17:00.000Z",
+            latency_ms: null,
+          },
+          atlas_quota_watch: {
+            status: "degraded",
+            detail: "quota meter above warning threshold",
+            evidence_source: "service-binding:atlas-quota-watch/quota",
+            measured_at: "2026-07-16T10:30:48.000Z",
+            latency_ms: 14,
+          },
+          atlas_systems: {
+            status: "healthy",
+            detail: "http 200",
+            evidence_source: "https://atlas-systems.uk",
+            measured_at: "2026-07-16T10:30:48.000Z",
+            latency_ms: 20,
+          },
+          ramone_edge: {
+            status: "healthy",
+            detail: "edge reachable; local AI sleeping",
+            evidence_source: "service-binding:ramone-edge/status",
+            measured_at: "2026-07-16T10:30:45.000Z",
+            latency_ms: 10,
+          },
+          status_surface: {
+            status: "healthy",
+            detail: "http 200",
+            evidence_source: "https://status.atlas-systems.uk",
+            measured_at: "2026-07-16T10:30:48.000Z",
+            latency_ms: 22,
+          },
         },
       },
       uptime: {
@@ -42,11 +116,12 @@ function facts(overrides = {}) {
     },
     infra: { stale: true, components: {} },
     apiLatencyMs: 18,
+    selfMeasuredAt: "2026-07-16T10:30:48.000Z",
     ...overrides,
   };
 }
 
-test("the contract exposes eleven exact, stable service identities", () => {
+test("the contract exposes twenty-one exact, stable service identities", () => {
   assert.deepEqual(SERVICES, [
     "ramone-memory",
     "atlas-corpus",
@@ -59,6 +134,16 @@ test("the contract exposes eleven exact, stable service identities", () => {
     "github-pulse",
     "site-pulse",
     "deploy-watch",
+    "atlas-badges",
+    "atlas-blackbox",
+    "atlas-dep-audit",
+    "atlas-doc-viewer",
+    "atlas-journey-watch",
+    "atlas-quota-watch",
+    "atlas-systems",
+    "ramone-edge",
+    "specular-sonify",
+    "status",
   ]);
   assert.deepEqual(
     deriveServices(null, NOW, 1200, facts()).map((service) => service.name),
@@ -78,6 +163,11 @@ test("current stats expand honest coverage and use dedicated component facts", (
   assert.equal(byName.get("ramone-trigger").uptime_pct, 100);
   assert.match(byName.get("ramone-trigger").evidence_source, /stats.*ramone_trigger/);
   assert.equal(byName.get("ramone-trigger").measured_at, "2026-07-16T10:30:48.000Z");
+  assert.equal(byName.get("atlas-dep-audit").status, "degraded");
+  assert.equal(byName.get("atlas-dep-audit").health_detail, "weekly audit running");
+  assert.equal(byName.get("atlas-doc-viewer").latency_ms, 24);
+  assert.equal(byName.get("specular-sonify").status, "healthy");
+  assert.equal(byName.get("status").evidence_source, "https://status.atlas-systems.uk");
 });
 
 test("stale infra is ignored in favour of the newer estate probe", () => {
@@ -126,6 +216,8 @@ test("an old stats snapshot is measured unknown, not current health", () => {
   assert.equal(byName.get("atlas-api-public").status, "healthy");
   assert.equal(byName.get("atlas-notify").status, "unknown");
   assert.equal(byName.get("ramone-trigger").status, "unknown");
+  assert.equal(byName.get("atlas-blackbox").status, "unknown");
+  assert.equal(byName.get("specular-sonify").status, "healthy");
   assert.equal(byName.get("atlas-notify").measured_at, "2026-07-16T09:00:00.000Z");
 });
 
@@ -135,7 +227,7 @@ test("missing evidence fails closed to unknown and a null estate health", () => 
     infra: null,
     apiLatencyMs: null,
   });
-  assert.equal(services.length, 11);
+  assert.equal(services.length, 21);
   assert.ok(services.every((service) => service.status === "unknown"));
   assert.ok(services.every((service) => service.evidence_source === null));
   assert.deepEqual(deriveEstate(services), {

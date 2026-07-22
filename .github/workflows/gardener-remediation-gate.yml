@@ -20,7 +20,7 @@ jobs:
       checks: read
       statuses: read
     with:
-      enabled: ${{ vars.ATLAS_GARDENER_AUTOMERGE_ENABLED == 'true' }}
+      enabled: ${{ vars.ATLAS_GARDENER_AUTOMERGE_ENABLED == 'true' && startsWith(github.event.pull_request.head.ref, 'gardener/') }}
       expected_app_login: atlas-gardener-w37-atlasreaper[bot]
       required_checks_json: '["Worker configuration validation"]'
       authority_ref: 6689de2c7ccd9264348c75bed99745021f88f191
@@ -38,14 +38,14 @@ jobs:
       - name: Hold the native auto-merge barrier
         env:
           GH_TOKEN: ${{ github.token }}
-          AUTOMERGE_ENABLED: ${{ vars.ATLAS_GARDENER_AUTOMERGE_ENABLED == 'true' }}
+          AUTOMERGE_ENABLED: ${{ vars.ATLAS_GARDENER_AUTOMERGE_ENABLED == 'true' && startsWith(github.event.pull_request.head.ref, 'gardener/') }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           GATE_CHECK_NAME: gardener / Validate Gardener automatic merge
         run: |
           set -euo pipefail
 
           if [ "$AUTOMERGE_ENABLED" != "true" ]; then
-            echo "Gardener auto-merge is disabled; the barrier is satisfied without a target write."
+            echo "Gardener auto-merge is disabled for this pull request; the barrier is satisfied without a target write."
             exit 0
           fi
 

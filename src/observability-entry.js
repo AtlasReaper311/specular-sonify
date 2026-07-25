@@ -1,7 +1,39 @@
-import worker from "./index.js";
+import worker, {
+  deriveEstate,
+  deriveServices,
+} from "./index.js";
 
 const DORA_NAME = "atlas-dora";
+const KV_KEY = "specular:last-known-good:v1";
+const DEFAULT_PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1";
 const VALID_STATUSES = new Set(["healthy", "degraded", "down", "unknown"]);
+
+function corsHeaders(request, env) {
+  const origin = request.headers.get("origin");
+  const headers = { vary: "origin" };
+  if (!origin) return headers;
+  const allowed = (env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (allowed.includes(origin)) {
+    headers["access-control-allow-origin"] = origin;
+    headers["access-control-allow-methods"] = "GET, OPTIONS";
+    headers["access-control-allow-headers"] = "content-type";
+    headers["access-control-max-age"] = "86400";
+  }
+  return headers;
+}
+
+function json(body, request, env) {
+  return new Response(JSON.stringify(body), {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...corsHeaders(request, env),
+    },
+  });
+}
 
 function statusFrom(detail, componentValue) {
   if (VALID_STATUSES.has(detail?.status)) return detail.status;
@@ -65,67 +97,81 @@ export function addDoraToFrame(payload, service) {
   return payload;
 }
 
-async function fetchStats(env) {
-  const hasBinding = env.ATLAS_PUBLIC && typeof env.ATLAS_PUBLIC.fetch === "function";
-  const fetcher = hasBinding ? env.ATLAS_PUBLIC : globalThis;
-  const base = hasBinding
-    ? "https://atlas-api-public/v1"
-    : (env.PUBLIC_API_BASE || "https://api.atlas-systems.uk/v1").replace(/\/$/, "");
-
-  const response = await fetcher.fetch(`${base}/stats`, {
-    headers: { "user-agent": "specular-sonify/2.0" },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!response.ok) throw new Error(`stats answered ${response.status}`);
-  return response.json();
+async function readSnapshot(env) {
+  try {
+    return await env.TELEMETRY_KV.get(KV_KEY, "json");
+  } catch (error) {
+    console.log("sonify composition: snapshot unreadable:", error.message);
+    return null;
+  }
 }
 
-async function handleSonify(request, env, ctx) {
-  const response = await worker.fetch(request, env, ctx);
-  if (!response.ok) return response;
-
-  let payload;
+async function fetchJson(fetchImpl, url) {
+  const started = Date.now();
   try {
-    payload = await response.clone().json();
-  } catch {
-    return response;
-  }
-
-  if (Array.isArray(payload?.services) && payload.services.some((entry) => entry?.name === DORA_NAME)) {
-    return response;
-  }
-
-  let service;
-  try {
-    service = doraServiceFromStats(await fetchStats(env));
-  } catch (error) {
-    service = {
-      name: DORA_NAME,
-      status: "unknown",
-      health_detail: String(error?.message ?? error).slice(0, 120),
-      evidence_source: "atlas-api-public:/v1/stats#estate.component_details.atlas_dora",
-      measured_at: null,
-      latency_ms: null,
-      uptime_pct: null,
-      error_rate: null,
-      last_deploy_secs_ago: null,
+    const response = await fetchImpl(url, {
+      headers: { "user-agent": "specular-sonify/2.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      return { ok: false, latency_ms: Date.now() - started, body: null };
+    }
+    return {
+      ok: true,
+      latency_ms: Date.now() - started,
+      body: await response.json(),
     };
+  } catch (error) {
+    console.log("sonify composition: upstream unreadable:", url, error.message);
+    return { ok: false, latency_ms: null, body: null };
   }
+}
 
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  return new Response(JSON.stringify(addDoraToFrame(payload, service)), {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
+async function readPublicFacts(env) {
+  const hasBinding = env.ATLAS_PUBLIC && typeof env.ATLAS_PUBLIC.fetch === "function";
+  const fetchImpl = hasBinding
+    ? env.ATLAS_PUBLIC.fetch.bind(env.ATLAS_PUBLIC)
+    : globalThis.fetch.bind(globalThis);
+  const base = hasBinding
+    ? "https://atlas-api-public/v1"
+    : (env.PUBLIC_API_BASE || DEFAULT_PUBLIC_API_BASE).replace(/\/$/, "");
+  const [stats, infra] = await Promise.all([
+    fetchJson(fetchImpl, `${base}/stats`),
+    fetchJson(fetchImpl, `${base}/infra/status`),
+  ]);
+  return {
+    stats: stats.ok ? stats.body : null,
+    infra: infra.ok ? infra.body : null,
+    apiLatencyMs: stats.latency_ms,
+  };
+}
+
+async function handleSonify(request, env) {
+  const nowMs = Date.now();
+  const timestamp = new Date(nowMs).toISOString();
+  const staleAfterSecs = Number(env.STALE_AFTER_SECONDS || "1200");
+  const [snapshot, facts] = await Promise.all([
+    readSnapshot(env),
+    readPublicFacts(env),
+  ]);
+  const services = deriveServices(snapshot, nowMs, staleAfterSecs, {
+    ...facts,
+    selfMeasuredAt: timestamp,
   });
+  const payload = {
+    timestamp,
+    estate: deriveEstate(services),
+    services,
+  };
+  addDoraToFrame(payload, doraServiceFromStats(facts.stats));
+  return json(payload, request, env);
 }
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/sonify" || url.pathname === "/sonify/")) {
-      return handleSonify(request, env, ctx);
+      return handleSonify(request, env);
     }
     return worker.fetch(request, env, ctx);
   },

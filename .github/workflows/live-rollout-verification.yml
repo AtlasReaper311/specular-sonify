@@ -1,0 +1,161 @@
+name: Live System Symphony rollout verification
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.repository }}-live-rollout-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-live-rollout:
+    name: Verify production contracts and browser surfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0, Node 24
+        with:
+          node-version: "22"
+
+      - name: Install pinned browser tooling
+        run: npm install --no-save --no-package-lock playwright@1.61.1
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify live API and browser contracts
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { chromium } from "playwright";
+
+          const SONIFY_URL = "https://api.atlas-systems.uk/sonify";
+          const META_URL = "https://api.atlas-systems.uk/sonify/_meta";
+          const OBSERVABILITY_URL = "https://atlas-systems.uk/systems/observability/";
+          const SYMPHONY_URL = "https://atlas-systems.uk/lab/system-symphony/?symphonyDebug=1";
+          const SITE_ORIGIN = "https://atlas-systems.uk";
+
+          async function fetchJson(url) {
+            const response = await fetch(url, {
+              headers: {
+                accept: "application/json",
+                origin: SITE_ORIGIN,
+              },
+              cache: "no-store",
+              signal: AbortSignal.timeout(20_000),
+            });
+            assert.equal(response.status, 200, `${url} answered ${response.status}`);
+            const allowedOrigin = response.headers.get("access-control-allow-origin");
+            assert.equal(allowedOrigin, SITE_ORIGIN, `${url} does not allow the production site origin`);
+            return response.json();
+          }
+
+          const sonify = await fetchJson(SONIFY_URL);
+          assert.ok(Array.isArray(sonify.services), "/sonify services array missing");
+          assert.equal(sonify.services.length, 22, `/sonify returned ${sonify.services.length} services`);
+          assert.ok(sonify.services.some((service) => service?.name === "atlas-dora"), "atlas-dora missing from /sonify");
+          assert.ok(sonify.services.some((service) => service?.name === "specular-sonify"), "specular-sonify missing from /sonify");
+          assert.ok(sonify.services.every((service) => !String(service?.evidence_source ?? "").startsWith("preview:")), "preview evidence leaked into production /sonify");
+
+          const meta = await fetchJson(META_URL);
+          const metaText = JSON.stringify(meta).toLowerCase();
+          assert.ok(metaText.includes("twenty-two"), "/sonify/_meta does not advertise twenty-two services");
+
+          const browser = await chromium.launch({
+            headless: true,
+            args: ["--autoplay-policy=no-user-gesture-required"],
+          });
+          const context = await browser.newContext();
+          const observability = await context.newPage();
+          const symphony = await context.newPage();
+          const pageErrors = [];
+          const requestFailures = [];
+
+          for (const page of [observability, symphony]) {
+            page.on("pageerror", (error) => pageErrors.push(error.message));
+            page.on("requestfailed", (request) => {
+              const url = request.url();
+              if (
+                url.startsWith("https://api.atlas-systems.uk/")
+                || url.includes("/vendor/tone.min.js")
+                || url.includes("/static/audio/system-symphony/")
+              ) {
+                requestFailures.push({ url, error: request.failure()?.errorText ?? "unknown" });
+              }
+            });
+          }
+
+          try {
+            const observationResponse = await observability.goto(OBSERVABILITY_URL, {
+              waitUntil: "domcontentloaded",
+              timeout: 60_000,
+            });
+            assert.ok(observationResponse?.ok(), `Observability answered ${observationResponse?.status() ?? "no response"}`);
+            await observability.waitForFunction(() => (
+              document.querySelector("#summary-services")?.textContent?.trim() === "13 covered"
+            ), null, { timeout: 60_000 });
+            const covered = await observability.locator("#summary-services").textContent();
+            assert.equal(covered?.trim(), "13 covered");
+
+            const symphonyResponse = await symphony.goto(SYMPHONY_URL, {
+              waitUntil: "domcontentloaded",
+              timeout: 60_000,
+            });
+            assert.ok(symphonyResponse?.ok(), `System Symphony answered ${symphonyResponse?.status() ?? "no response"}`);
+            await symphony.waitForFunction(() => Boolean(window.Tone) && Boolean(window.__symphonyEngine), null, { timeout: 30_000 });
+
+            const audioButton = symphony.locator("[data-audio-toggle]:visible").first();
+            await audioButton.waitFor({ state: "visible", timeout: 30_000 });
+            await audioButton.click();
+            await symphony.waitForFunction(() => (
+              [...document.querySelectorAll("[data-audio-toggle]")].some((button) => (
+                button.getAttribute("aria-pressed") === "true"
+                && /stop/i.test(button.textContent ?? "")
+              ))
+            ), null, { timeout: 45_000 });
+            await symphony.waitForFunction(() => window.__symphonyEngine?.isSampleReady?.() === true, null, { timeout: 45_000 });
+            await symphony.waitForFunction(() => {
+              const stats = window.__symphonyEngine?.getSampleLoadStats?.();
+              return stats?.backgroundComplete === true;
+            }, null, { timeout: 90_000 });
+
+            const symphonyState = await symphony.evaluate(() => ({
+              toneAvailable: Boolean(window.Tone),
+              toneContextState: window.Tone?.getContext?.()?.rawContext?.state
+                ?? window.Tone?.context?.rawContext?.state
+                ?? window.Tone?.context?.state
+                ?? null,
+              source: document.getElementById("system-symphony-widget")?.dataset?.source ?? null,
+              state: document.getElementById("system-symphony-widget")?.dataset?.state ?? null,
+              sampleReady: window.__symphonyEngine?.isSampleReady?.() ?? false,
+              sampleStats: window.__symphonyEngine?.getSampleLoadStats?.() ?? null,
+              status: document.querySelector("[data-important-status]")?.textContent?.trim() ?? null,
+            }));
+
+            assert.equal(symphonyState.source, "live", JSON.stringify(symphonyState, null, 2));
+            assert.equal(symphonyState.sampleReady, true, JSON.stringify(symphonyState, null, 2));
+            assert.equal(symphonyState.sampleStats?.failed, 0, JSON.stringify(symphonyState, null, 2));
+            assert.equal(symphonyState.sampleStats?.loaded, symphonyState.sampleStats?.totalAssets, JSON.stringify(symphonyState, null, 2));
+            assert.equal(pageErrors.length, 0, pageErrors.join("\n"));
+            assert.equal(requestFailures.length, 0, JSON.stringify(requestFailures, null, 2));
+
+            console.log(JSON.stringify({
+              sonifyServices: sonify.services.length,
+              atlasDoraPresent: true,
+              metaAdvertisesTwentyTwo: true,
+              observabilityCovered: covered?.trim(),
+              symphony: symphonyState,
+              pageErrors,
+              requestFailures,
+            }, null, 2));
+          } finally {
+            await browser.close();
+          }
+          NODE

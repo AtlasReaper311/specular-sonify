@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { chromium } from "playwright";
 
+const reportPath = process.env.REPORT_PATH ?? "live-system-symphony-report.json";
 const browser = await chromium.launch({
   headless: true,
   args: ["--autoplay-policy=no-user-gesture-required"],
@@ -45,6 +48,11 @@ async function readState() {
   })).catch((error) => ({ evaluateError: error.message }));
 }
 
+async function writeReport(report) {
+  await mkdir(path.dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+}
+
 try {
   stage = "navigation";
   const response = await page.goto("https://atlas-systems.uk/lab/system-symphony/?symphonyDebug=1", {
@@ -76,7 +84,9 @@ try {
 
   stage = "assertions";
   const state = await readState();
-  console.log(JSON.stringify({ stage, state, pageErrors, requestFailures }, null, 2));
+  const report = { ok: true, stage, state, pageErrors, requestFailures };
+  await writeReport(report);
+  console.log(JSON.stringify(report, null, 2));
   assert.equal(state.source, "live", JSON.stringify(state, null, 2));
   assert.equal(state.sampleReady, true, JSON.stringify(state, null, 2));
   assert.equal(state.sampleStats?.failed, 0, JSON.stringify(state, null, 2));
@@ -84,13 +94,16 @@ try {
   assert.equal(pageErrors.length, 0, pageErrors.join("\n"));
   assert.equal(requestFailures.length, 0, JSON.stringify(requestFailures, null, 2));
 } catch (error) {
-  console.error(JSON.stringify({
+  const report = {
+    ok: false,
     failedStage: stage,
     error: { name: error.name, message: error.message },
     state: await readState(),
     pageErrors,
     requestFailures,
-  }, null, 2));
+  };
+  await writeReport(report);
+  console.error(JSON.stringify(report, null, 2));
   throw error;
 } finally {
   await browser.close();

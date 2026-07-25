@@ -48,3 +48,54 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_WORKERS_DEPLOY_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: npx --yes wrangler@4.112.0 deploy
+
+      - name: Verify live sonification contract
+        env:
+          SONIFY_URL: https://api.atlas-systems.uk/sonify
+          EXPECTED_ORIGIN: https://system-symphony-pr-43.atlas-systems-44t.pages.dev
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { setTimeout as sleep } from "node:timers/promises";
+
+          const url = process.env.SONIFY_URL;
+          const expectedOrigin = process.env.EXPECTED_ORIGIN;
+          let lastError = null;
+
+          for (let attempt = 1; attempt <= 12; attempt += 1) {
+            try {
+              const response = await fetch(url, {
+                headers: {
+                  accept: "application/json",
+                  origin: expectedOrigin,
+                },
+                cache: "no-store",
+              });
+              assert.equal(response.status, 200, `HTTP ${response.status}`);
+              assert.equal(
+                response.headers.get("access-control-allow-origin"),
+                expectedOrigin,
+                "preview origin is not allowed",
+              );
+
+              const payload = await response.json();
+              assert.equal(Array.isArray(payload.services), true, "services array missing");
+              assert.equal(payload.services.length, 22, "hardened service count is not live");
+              assert.ok(payload.services.some((service) => service.name === "atlas-dora"));
+              assert.ok(payload.services.some((service) => service.name === "specular-sonify"));
+              assert.ok(payload.services.every((service) => (
+                !String(service.evidence_source ?? "").startsWith("preview:")
+              )));
+
+              console.log(`Live sonification contract verified on attempt ${attempt}.`);
+              process.exit(0);
+            } catch (error) {
+              lastError = error;
+              console.log(`Live verification attempt ${attempt} failed: ${error.message}`);
+              if (attempt < 12) await sleep(5000);
+            }
+          }
+
+          throw lastError ?? new Error("live sonification verification failed");
+          NODE

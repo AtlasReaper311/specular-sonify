@@ -14,7 +14,7 @@
 # (decisions.md :: wrangler.toml rule).
 
 name = "specular-sonify"
-main = "src/index.js"
+main = "src/observability-entry.js"
 compatibility_date = "2026-07-01"
 # Routed production hostname only, one URL to reason about (matches
 # specular-edge).

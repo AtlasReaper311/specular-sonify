@@ -97,6 +97,21 @@ export function addDoraToFrame(payload, service) {
   return payload;
 }
 
+export function augmentMetaPayload(payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.endpoints)) {
+    return payload;
+  }
+  return {
+    ...payload,
+    endpoints: payload.endpoints.map((endpoint) => endpoint?.path === "/sonify"
+      ? {
+          ...endpoint,
+          description: "Current estate frame: overall health, active incidents, twenty-two evidence-backed services",
+        }
+      : endpoint),
+  };
+}
+
 async function readSnapshot(env) {
   try {
     return await env.TELEMETRY_KV.get(KV_KEY, "json");
@@ -167,11 +182,32 @@ async function handleSonify(request, env) {
   return json(payload, request, env);
 }
 
+async function handleMeta(request, env, ctx) {
+  const response = await worker.fetch(request, env, ctx);
+  if (!response.ok) return response;
+  let payload;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(JSON.stringify(augmentMetaPayload(payload)), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/sonify" || url.pathname === "/sonify/")) {
       return handleSonify(request, env);
+    }
+    if (request.method === "GET" && url.pathname === "/sonify/_meta") {
+      return handleMeta(request, env, ctx);
     }
     return worker.fetch(request, env, ctx);
   },

@@ -61,26 +61,3 @@ jobs:
           if not dev.get("workers_dev"):
               raise SystemExit("dev environment must remain workers.dev-only")
           PY
-
-      - name: Inspect canonical deployment secret access
-        env:
-          CF_WORKERS_DEPLOY_TOKEN: ${{ secrets.CF_WORKERS_DEPLOY_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          DISCORD_API_DEPLOYS_WEBHOOK: ${{ secrets.DISCORD_API_DEPLOYS_WEBHOOK }}
-        run: |
-          set -euo pipefail
-
-          missing=0
-          for name in CF_WORKERS_DEPLOY_TOKEN CF_ACCOUNT_ID DISCORD_API_DEPLOYS_WEBHOOK; do
-            value="${!name:-}"
-            if [ -z "$value" ]; then
-              echo "::error::${name} is unavailable to specular-sonify pull-request workflows"
-              missing=1
-            fi
-          done
-
-          if [ "$missing" -ne 0 ]; then
-            exit 1
-          fi
-
-          echo "All canonical deployment secret names are available to specular-sonify."

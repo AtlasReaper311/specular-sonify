@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   addDoraToFrame,
+  augmentMetaPayload,
   doraServiceFromStats,
 } from "../src/observability-entry.js";
 
@@ -67,6 +68,19 @@ test("a missing DORA measurement remains unknown rather than healthy", () => {
   assert.equal(service.status, "unknown");
   assert.equal(service.health_detail, "DORA health evidence unavailable");
   assert.equal(service.evidence_source, null);
+});
+
+test("the public metadata advertises the complete service frame", () => {
+  const payload = augmentMetaPayload({
+    name: "specular-sonify",
+    endpoints: [
+      { method: "GET", path: "/sonify", description: "twenty-one services" },
+      { method: "GET", path: "/sonify/_meta", description: "This document" },
+    ],
+  });
+  const endpoint = payload.endpoints.find((entry) => entry.path === "/sonify");
+  assert.match(endpoint.description, /twenty-two evidence-backed services/);
+  assert.equal(payload.endpoints[1].description, "This document");
 });
 
 test("Wrangler delegates through the measured service composition entry", () => {

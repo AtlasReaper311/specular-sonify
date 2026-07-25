@@ -43,7 +43,7 @@ curl -sS https://api.atlas-systems.uk/sonify
 curl -sS https://api.atlas-systems.uk/sonify/_meta
 ```
 
-`GET /sonify` returns one current estate frame with `overall_health`, `active_incidents`, and the exact twenty-one evidence-backed service records rendered by System SYMPHONY. `GET /sonify/_meta` returns the estate-standard self-description supplied by the vendored `_meta.js` helper.
+`GET /sonify` returns one current estate frame with `overall_health`, `active_incidents`, and the exact twenty-two evidence-backed service records rendered by System SYMPHONY. `GET /sonify/_meta` returns the estate-standard self-description supplied by the vendored `_meta.js` helper.
 
 ## Contract
 
@@ -70,7 +70,7 @@ curl -sS https://api.atlas-systems.uk/sonify/_meta
 }
 ```
 
-The `services` array always contains the same twenty-one entries in the same order: `ramone-memory`, `atlas-corpus`, `specular-telemetry`, `atlas-api-public`, `atlas-api-index`, `atlas-notify`, `ramone-trigger`, `specular-edge`, `github-pulse`, `site-pulse`, `deploy-watch`, `atlas-badges`, `atlas-blackbox`, `atlas-dep-audit`, `atlas-doc-viewer`, `atlas-journey-watch`, `atlas-quota-watch`, `atlas-systems`, `ramone-edge`, `specular-sonify`, and `status`. A service whose current evidence cannot determine health is still present with status `unknown` and null numeric fields; null is part of the contract, not an error case.
+The `services` array always contains the same twenty-two entries in the same order: `ramone-memory`, `atlas-corpus`, `specular-telemetry`, `atlas-api-public`, `atlas-api-index`, `atlas-notify`, `ramone-trigger`, `specular-edge`, `github-pulse`, `site-pulse`, `deploy-watch`, `atlas-badges`, `atlas-blackbox`, `atlas-dep-audit`, `atlas-doc-viewer`, `atlas-journey-watch`, `atlas-quota-watch`, `atlas-systems`, `ramone-edge`, `atlas-dora`, `specular-sonify`, and `status`. A service whose current evidence cannot determine health is still present with status `unknown` and null numeric fields; null is part of the contract, not an error case.
 
 `health_detail`, `evidence_source`, and `measured_at` are additive transparency fields. They show the bounded explanation, the current public fact that produced the status, and when that fact was observed. They do not contain credentials, workflow logs, actors, or private data.
 
@@ -95,12 +95,13 @@ The `services` array always contains the same twenty-one entries in the same ord
 | `atlas-quota-watch` | `/v1/stats` quota contract and threshold verdict |
 | `atlas-systems` | `/v1/stats` primary site reachability probe |
 | `ramone-edge` | `/v1/stats` public edge status probe; sleeping local AI remains a separate fact |
+| `atlas-dora` | Same-zone `/dora/health` evidence composed into `/v1/stats` |
 | `specular-sonify` | Current request handler execution |
 | `status` | `/v1/stats` public status-surface reachability probe |
 
 ## Operational Notes
 
-`TELEMETRY_KV` currently holds one key: `specular:last-known-good:v1`, which can provide the most specific classification for `specular-telemetry`. `atlas-api-public` contributes nineteen current estate component verdicts plus the success and latency of the current stats request as its own twentieth service fact. The executing `specular-sonify` handler supplies only its own twenty-first verdict. A stale sentinel or estate snapshot is never reused as current health. Registry metadata is descriptive only and is never treated as health. Fields with no source remain null: error rate and deploy age are not guessed.
+`TELEMETRY_KV` currently holds one key: `specular:last-known-good:v1`, which can provide the most specific classification for `specular-telemetry`. `atlas-api-public` contributes nineteen stored estate component verdicts plus the live `atlas-dora` health composition. The successful stats request supplies the `atlas-api-public` service fact, and the executing `specular-sonify` handler supplies the twenty-second verdict. A stale sentinel or estate snapshot is never reused as current health. Registry metadata is descriptive only and is never treated as health. Fields with no source remain null: error rate and deploy age are not guessed.
 
 `overall_health` is the mean score over known services only: `healthy` is `1`, `degraded` is `0.5`, and `down` is `0`. Unknown services are excluded because no data is not the same as bad data; if every service is unknown, health is `null` rather than an invented `1.0`. `/sonify` is served with `cache-control: no-store`; the payload is small and the point of the endpoint is liveness.
 
@@ -110,6 +111,7 @@ The `services` array always contains the same twenty-one entries in the same ord
 npm test
 node --check src/_meta.js
 node --check src/index.js
+node --check src/observability-entry.js
 ```
 
 ## How it fits into Atlas Systems

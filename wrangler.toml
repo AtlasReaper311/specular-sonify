@@ -39,7 +39,7 @@ binding = "ATLAS_PUBLIC"
 service = "atlas-api-public"
 
 [vars]
-ALLOWED_ORIGINS = "https://atlas-systems.uk,https://www.atlas-systems.uk,http://localhost:8788"
+ALLOWED_ORIGINS = "https://atlas-systems.uk,https://www.atlas-systems.uk,https://system-symphony-pr-43.atlas-systems-44t.pages.dev,http://localhost:8788"
 # A healthy specular-edge refreshes the snapshot at most every 600s
 # (its KV_MIN_WRITE_INTERVAL_SECONDS); 1200 gives two write intervals
 # of headroom before an online-claiming snapshot reads as degraded.
@@ -60,7 +60,7 @@ PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1"
 workers_dev = true
 
 [env.dev.vars]
-ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788"
+ALLOWED_ORIGINS = "https://system-symphony-pr-43.atlas-systems-44t.pages.dev,http://localhost:8788,http://127.0.0.1:8788"
 STALE_AFTER_SECONDS = "1200"
 PUBLIC_API_BASE = "https://api.atlas-systems.uk/v1"
 

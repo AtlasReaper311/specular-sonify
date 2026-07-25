@@ -33,12 +33,11 @@ async function readState() {
       ?? window.Tone?.context?.rawContext?.state
       ?? window.Tone?.context?.state
       ?? null,
-    debugEngine: Boolean(window.__symphonyEngine),
     source: document.getElementById("system-symphony-widget")?.dataset?.source ?? null,
     hostState: document.getElementById("system-symphony-widget")?.dataset?.state ?? null,
-    sampleReady: window.__symphonyEngine?.isSampleReady?.() ?? false,
-    sampleStats: window.__symphonyEngine?.getSampleLoadStats?.() ?? null,
+    running: document.getElementById("system-symphony-widget")?.dataset?.running ?? null,
     status: document.querySelector("[data-important-status]")?.textContent?.trim() ?? null,
+    sourceBadge: document.querySelector("[data-source-badge]")?.textContent?.trim() ?? null,
     buttons: [...document.querySelectorAll("[data-audio-toggle]")].map((button) => ({
       text: button.textContent?.trim() ?? "",
       pressed: button.getAttribute("aria-pressed"),
@@ -55,44 +54,53 @@ async function writeReport(report) {
 
 try {
   stage = "navigation";
-  const response = await page.goto("https://atlas-systems.uk/lab/system-symphony/?symphonyDebug=1", {
+  const response = await page.goto("https://atlas-systems.uk/lab/system-symphony/", {
     waitUntil: "domcontentloaded",
     timeout: 60_000,
   });
   assert.ok(response?.ok(), `System Symphony answered ${response?.status() ?? "no response"}`);
 
-  stage = "engine-ready";
-  await page.waitForFunction(() => Boolean(window.Tone) && Boolean(window.__symphonyEngine), null, { timeout: 30_000 });
+  stage = "interface-ready";
+  await page.waitForFunction(() => (
+    Boolean(window.Tone)
+    && document.getElementById("system-symphony-widget")?.dataset?.source === "live"
+    && [...document.querySelectorAll("[data-audio-toggle]")].some((button) => (
+      Boolean(button.offsetWidth || button.offsetHeight || button.getClientRects().length)
+      && button.disabled === false
+    ))
+  ), null, { timeout: 45_000 });
 
   stage = "start-control";
   const button = page.locator("[data-audio-toggle]:visible").first();
-  await button.waitFor({ state: "visible", timeout: 30_000 });
   await button.click();
 
   stage = "audio-running";
   await page.waitForFunction(() => (
-    [...document.querySelectorAll("[data-audio-toggle]")].some((node) => (
+    document.getElementById("system-symphony-widget")?.dataset?.running === "1"
+    && [...document.querySelectorAll("[data-audio-toggle]")].some((node) => (
       node.getAttribute("aria-pressed") === "true" && /stop/i.test(node.textContent ?? "")
     ))
   ), null, { timeout: 45_000 });
 
-  stage = "core-samples";
-  await page.waitForFunction(() => window.__symphonyEngine?.isSampleReady?.() === true, null, { timeout: 45_000 });
-
   stage = "full-sample-library";
-  await page.waitForFunction(() => window.__symphonyEngine?.getSampleLoadStats?.()?.backgroundComplete === true, null, { timeout: 90_000 });
+  await page.waitForFunction(() => {
+    const status = document.querySelector("[data-important-status]")?.textContent?.trim() ?? "";
+    return /^Full hybrid instrument ready: 38\/38 assets\.$/.test(status);
+  }, null, { timeout: 90_000 });
 
   stage = "assertions";
   const state = await readState();
+  assert.equal(state.source, "live", JSON.stringify(state, null, 2));
+  assert.equal(state.sourceBadge, "LIVE", JSON.stringify(state, null, 2));
+  assert.equal(state.running, "1", JSON.stringify(state, null, 2));
+  assert.equal(state.status, "Full hybrid instrument ready: 38/38 assets.", JSON.stringify(state, null, 2));
+  assert.equal(state.toneContextState, "running", JSON.stringify(state, null, 2));
+  assert.equal(pageErrors.length, 0, pageErrors.join("\n"));
+  assert.equal(requestFailures.length, 0, JSON.stringify(requestFailures, null, 2));
+
   const report = { ok: true, stage, state, pageErrors, requestFailures };
   await writeReport(report);
   console.log(JSON.stringify(report, null, 2));
-  assert.equal(state.source, "live", JSON.stringify(state, null, 2));
-  assert.equal(state.sampleReady, true, JSON.stringify(state, null, 2));
-  assert.equal(state.sampleStats?.failed, 0, JSON.stringify(state, null, 2));
-  assert.equal(state.sampleStats?.loaded, state.sampleStats?.totalAssets, JSON.stringify(state, null, 2));
-  assert.equal(pageErrors.length, 0, pageErrors.join("\n"));
-  assert.equal(requestFailures.length, 0, JSON.stringify(requestFailures, null, 2));
 } catch (error) {
   const report = {
     ok: false,

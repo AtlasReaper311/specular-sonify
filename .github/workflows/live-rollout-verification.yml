@@ -63,6 +63,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Check out verifier
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0, Node 24
+
       - name: Install pinned browser tooling
         run: npm install --no-save --no-package-lock playwright@1.61.1 >/tmp/playwright-npm.log 2>&1 || { cat /tmp/playwright-npm.log; exit 1; }
 
@@ -70,104 +73,4 @@ jobs:
         run: npx playwright install --with-deps chromium >/tmp/playwright-browser.log 2>&1 || { cat /tmp/playwright-browser.log; exit 1; }
 
       - name: Verify approved live instrument
-        run: |
-          set -euo pipefail
-          node --input-type=module <<'NODE'
-          import assert from "node:assert/strict";
-          import { chromium } from "playwright";
-
-          const browser = await chromium.launch({
-            headless: true,
-            args: ["--autoplay-policy=no-user-gesture-required"],
-          });
-          const page = await browser.newPage();
-          const pageErrors = [];
-          const requestFailures = [];
-          let stage = "launch";
-
-          page.on("pageerror", (error) => pageErrors.push(error.message));
-          page.on("requestfailed", (request) => {
-            const url = request.url();
-            if (
-              url.startsWith("https://api.atlas-systems.uk/")
-              || url.includes("/vendor/tone.min.js")
-              || url.includes("/static/audio/system-symphony/")
-            ) {
-              requestFailures.push({ url, error: request.failure()?.errorText ?? "unknown" });
-            }
-          });
-
-          async function state() {
-            return page.evaluate(() => ({
-              location: window.location.href,
-              toneAvailable: Boolean(window.Tone),
-              toneContextState: window.Tone?.getContext?.()?.rawContext?.state
-                ?? window.Tone?.context?.rawContext?.state
-                ?? window.Tone?.context?.state
-                ?? null,
-              debugEngine: Boolean(window.__symphonyEngine),
-              source: document.getElementById("system-symphony-widget")?.dataset?.source ?? null,
-              hostState: document.getElementById("system-symphony-widget")?.dataset?.state ?? null,
-              sampleReady: window.__symphonyEngine?.isSampleReady?.() ?? false,
-              sampleStats: window.__symphonyEngine?.getSampleLoadStats?.() ?? null,
-              status: document.querySelector("[data-important-status]")?.textContent?.trim() ?? null,
-              buttons: [...document.querySelectorAll("[data-audio-toggle]")].map((button) => ({
-                text: button.textContent?.trim() ?? "",
-                pressed: button.getAttribute("aria-pressed"),
-                disabled: button.disabled,
-                visible: Boolean(button.offsetWidth || button.offsetHeight || button.getClientRects().length),
-              })),
-            })).catch((error) => ({ evaluateError: error.message }));
-          }
-
-          try {
-            stage = "navigation";
-            const response = await page.goto("https://atlas-systems.uk/lab/system-symphony/?symphonyDebug=1", {
-              waitUntil: "domcontentloaded",
-              timeout: 60_000,
-            });
-            assert.ok(response?.ok(), `System Symphony answered ${response?.status() ?? "no response"}`);
-
-            stage = "engine-ready";
-            await page.waitForFunction(() => Boolean(window.Tone) && Boolean(window.__symphonyEngine), null, { timeout: 30_000 });
-
-            stage = "start-control";
-            const button = page.locator("[data-audio-toggle]:visible").first();
-            await button.waitFor({ state: "visible", timeout: 30_000 });
-            await button.click();
-
-            stage = "audio-running";
-            await page.waitForFunction(() => (
-              [...document.querySelectorAll("[data-audio-toggle]")].some((node) => (
-                node.getAttribute("aria-pressed") === "true" && /stop/i.test(node.textContent ?? "")
-              ))
-            ), null, { timeout: 45_000 });
-
-            stage = "core-samples";
-            await page.waitForFunction(() => window.__symphonyEngine?.isSampleReady?.() === true, null, { timeout: 45_000 });
-
-            stage = "full-sample-library";
-            await page.waitForFunction(() => window.__symphonyEngine?.getSampleLoadStats?.()?.backgroundComplete === true, null, { timeout: 90_000 });
-
-            stage = "assertions";
-            const result = await state();
-            console.log(JSON.stringify({ stage, result, pageErrors, requestFailures }, null, 2));
-            assert.equal(result.source, "live", JSON.stringify(result, null, 2));
-            assert.equal(result.sampleReady, true, JSON.stringify(result, null, 2));
-            assert.equal(result.sampleStats?.failed, 0, JSON.stringify(result, null, 2));
-            assert.equal(result.sampleStats?.loaded, result.sampleStats?.totalAssets, JSON.stringify(result, null, 2));
-            assert.equal(pageErrors.length, 0, pageErrors.join("\n"));
-            assert.equal(requestFailures.length, 0, JSON.stringify(requestFailures, null, 2));
-          } catch (error) {
-            console.error(JSON.stringify({
-              failedStage: stage,
-              error: { name: error.name, message: error.message },
-              state: await state(),
-              pageErrors,
-              requestFailures,
-            }, null, 2));
-            throw error;
-          } finally {
-            await browser.close();
-          }
-          NODE
+        run: node .github/scripts/verify-live-system-symphony.mjs

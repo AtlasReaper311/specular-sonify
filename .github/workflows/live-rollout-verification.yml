@@ -73,4 +73,15 @@ jobs:
         run: npx playwright install --with-deps chromium >/tmp/playwright-browser.log 2>&1 || { cat /tmp/playwright-browser.log; exit 1; }
 
       - name: Verify approved live instrument
+        env:
+          REPORT_PATH: ${{ runner.temp }}/live-system-symphony/report.json
         run: node .github/scripts/verify-live-system-symphony.mjs
+
+      - name: Upload live instrument diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1, Node 24
+        with:
+          name: live-system-symphony-report
+          path: ${{ runner.temp }}/live-system-symphony
+          if-no-files-found: error
+          retention-days: 7

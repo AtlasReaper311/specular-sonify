@@ -32,6 +32,7 @@ jobs:
         run: |
           node --check src/_meta.js
           node --check src/index.js
+          node --check src/observability-entry.js
 
       - name: Test evidence derivation
         run: npm test
@@ -45,8 +46,8 @@ jobs:
 
           with Path("wrangler.toml").open("rb") as handle:
               config = tomllib.load(handle)
-          if config.get("name") != "specular-sonify" or config.get("main") != "src/index.js":
-              raise SystemExit("wrangler.toml does not identify the specular-sonify entry point")
+          if config.get("name") != "specular-sonify" or config.get("main") != "src/observability-entry.js":
+              raise SystemExit("wrangler.toml does not identify the specular-sonify composition entry")
           routes = config.get("routes", [])
           if not routes or not all(re.fullmatch(r"[0-9a-f]{32}", item.get("zone_id", "")) for item in routes):
               raise SystemExit("production routes require literal 32-character zone IDs")

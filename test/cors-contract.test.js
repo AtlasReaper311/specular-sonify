@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import worker from "../src/observability-entry.js";
@@ -10,15 +10,22 @@ const PREVIEW_ORIGIN =
 const UNLISTED_ORIGIN = "https://unlisted-preview.example.invalid";
 const KV_KEY = "specular:last-known-good:v1";
 
-function productionAllowedOriginsFromWrangler() {
-  const text = readFileSync(WRANGLER_PATH, "utf8");
+function parseProductionAllowedOrigins(tomlText) {
   // Production [vars] precedes [env.dev]; take the first ALLOWED_ORIGINS assignment.
-  const match = text.match(/ALLOWED_ORIGINS\s*=\s*"([^"]+)"/);
+  const match = tomlText.match(/ALLOWED_ORIGINS\s*=\s*"([^"]+)"/);
   assert.ok(match, "wrangler.toml must declare ALLOWED_ORIGINS");
   return match[1]
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function readProductionWranglerText() {
+  return readFileSync(WRANGLER_PATH, "utf8");
+}
+
+function productionAllowedOriginsFromWrangler() {
+  return parseProductionAllowedOrigins(readProductionWranglerText());
 }
 
 function originAllowlistHas(origins, candidate) {
@@ -167,37 +174,34 @@ test("OPTIONS for an unlisted origin omits Access-Control-Allow-Origin", async (
 });
 
 test("non-vacuity: removing the historical preview origin fails the focused CORS lock", async () => {
-  const original = readFileSync(WRANGLER_PATH, "utf8");
+  const original = readProductionWranglerText();
   const mutated = original.replace(`${PREVIEW_ORIGIN},`, "");
   assert.notEqual(original, mutated);
-  writeFileSync(WRANGLER_PATH, mutated);
 
-  try {
-    const origins = productionAllowedOriginsFromWrangler();
-    assert.equal(originAllowlistHas(origins, PREVIEW_ORIGIN), false);
+  const origins = parseProductionAllowedOrigins(mutated);
+  assert.equal(originAllowlistHas(origins, PREVIEW_ORIGIN), false);
 
-    const env = createEnv(origins.join(","));
-    const getResponse = await invoke("/sonify", {
-      origin: PREVIEW_ORIGIN,
-      env,
-    });
-    assert.equal(getResponse.headers.get("access-control-allow-origin"), null);
+  const env = createEnv(origins.join(","));
+  const getResponse = await invoke("/sonify", {
+    origin: PREVIEW_ORIGIN,
+    env,
+  });
+  assert.equal(getResponse.headers.get("access-control-allow-origin"), null);
 
-    const optionsResponse = await invoke("/sonify", {
-      method: "OPTIONS",
-      origin: PREVIEW_ORIGIN,
-      env,
-    });
-    assert.equal(optionsResponse.headers.get("access-control-allow-origin"), null);
+  const optionsResponse = await invoke("/sonify", {
+    method: "OPTIONS",
+    origin: PREVIEW_ORIGIN,
+    env,
+  });
+  assert.equal(optionsResponse.headers.get("access-control-allow-origin"), null);
 
-    assert.throws(
-      () => assertPreviewOriginAllowlisted(origins),
-      /historical preview origin from #14/
-    );
-  } finally {
-    writeFileSync(WRANGLER_PATH, original);
-  }
+  assert.throws(
+    () => assertPreviewOriginAllowlisted(origins),
+    /historical preview origin from #14/
+  );
 
+  // Production source must remain byte-identical; non-vacuity mutates only memory.
+  assert.equal(readProductionWranglerText(), original);
   assertPreviewOriginAllowlisted(productionAllowedOriginsFromWrangler());
   const restoredGet = await invoke("/sonify", { origin: PREVIEW_ORIGIN });
   assert.equal(

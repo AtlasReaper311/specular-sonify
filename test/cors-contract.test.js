@@ -21,20 +21,26 @@ function productionAllowedOriginsFromWrangler() {
     .filter(Boolean);
 }
 
+function originAllowlistHas(origins, candidate) {
+  // Exact-string membership only. Do not use substring checks on origin URLs;
+  // CodeQL treats those as incomplete host sanitization.
+  return new Set(origins).has(candidate);
+}
+
 function assertPreviewOriginAllowlisted(origins) {
   assert.ok(
-    origins.includes(PREVIEW_ORIGIN),
+    originAllowlistHas(origins, PREVIEW_ORIGIN),
     "historical preview origin from #14 must remain in production ALLOWED_ORIGINS"
   );
 }
 
-function createTelemetryKv(snapshot = null) {
+function createTelemetryKv() {
   return {
-    async get(key, type) {
+    async get(key) {
       assert.equal(key, KV_KEY);
-      if (snapshot === null) return null;
-      if (type === "json") return structuredClone(snapshot);
-      return JSON.stringify(snapshot);
+      // CORS contract tests only need an empty snapshot; keep the binding
+      // read-only and free of unused branches.
+      return null;
     },
     async put() {
       throw new Error("TELEMETRY_KV.put must not be called by CORS contract tests");
@@ -58,7 +64,7 @@ function createEnv(allowedOrigins) {
     ALLOWED_ORIGINS: allowedOrigins,
     STALE_AFTER_SECONDS: "1200",
     PUBLIC_API_BASE: "https://api.atlas-systems.uk/v1",
-    TELEMETRY_KV: createTelemetryKv(null),
+    TELEMETRY_KV: createTelemetryKv(),
     ATLAS_PUBLIC: createAtlasPublic(),
   };
 }
@@ -168,7 +174,7 @@ test("non-vacuity: removing the historical preview origin fails the focused CORS
 
   try {
     const origins = productionAllowedOriginsFromWrangler();
-    assert.equal(origins.includes(PREVIEW_ORIGIN), false);
+    assert.equal(originAllowlistHas(origins, PREVIEW_ORIGIN), false);
 
     const env = createEnv(origins.join(","));
     const getResponse = await invoke("/sonify", {

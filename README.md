@@ -95,7 +95,7 @@ The `services` array always contains the same twenty-two entries in the same ord
 | `atlas-quota-watch` | `/v1/stats` quota contract and threshold verdict |
 | `atlas-systems` | `/v1/stats` primary site reachability probe |
 | `ramone-edge` | `/v1/stats` public edge status probe; sleeping local AI remains a separate fact |
-| `atlas-dora` | Same-zone `/dora/health` evidence composed into `/v1/stats` |
+| `atlas-dora` | Same-zone `/dora/health` evidence exposed as `/v1/stats` `estate.supplemental_health.atlas_dora` |
 | `specular-sonify` | Current request handler execution |
 | `status` | `/v1/stats` public status-surface reachability probe |
 

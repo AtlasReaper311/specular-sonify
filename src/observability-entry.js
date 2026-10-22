@@ -43,7 +43,8 @@ function statusFrom(detail, componentValue) {
 }
 
 export function doraServiceFromStats(stats) {
-  const detail = stats?.estate?.component_details?.atlas_dora;
+  const detail = stats?.estate?.supplemental_health?.atlas_dora
+    ?? stats?.estate?.component_details?.atlas_dora;
   const componentValue = stats?.estate?.components?.atlas_dora;
   const status = statusFrom(detail, componentValue);
 

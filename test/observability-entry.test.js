@@ -12,8 +12,7 @@ function statsFixture() {
   return {
     generated_at: "2026-07-25T12:00:00.000Z",
     estate: {
-      components: { atlas_dora: true },
-      component_details: {
+      supplemental_health: {
         atlas_dora: {
           status: "healthy",
           detail: "health contract reports ok",
@@ -23,7 +22,7 @@ function statsFixture() {
         },
       },
     },
-    uptime: { components: { atlas_dora: null } },
+    uptime: { components: {} },
   };
 }
 
@@ -68,6 +67,24 @@ test("a missing DORA measurement remains unknown rather than healthy", () => {
   assert.equal(service.status, "unknown");
   assert.equal(service.health_detail, "DORA health evidence unavailable");
   assert.equal(service.evidence_source, null);
+});
+
+test("DORA stats retain compatibility with the previous component fields", () => {
+  const service = doraServiceFromStats({
+    estate: {
+      components: { atlas_dora: true },
+      component_details: {
+        atlas_dora: {
+          status: "healthy",
+          detail: "legacy DORA health",
+          evidence_source: "service-binding:atlas-dora/dora/health",
+        },
+      },
+    },
+    uptime: { components: { atlas_dora: null } },
+  });
+  assert.equal(service.status, "healthy");
+  assert.equal(service.health_detail, "legacy DORA health");
 });
 
 test("the public metadata advertises the complete service frame", () => {
